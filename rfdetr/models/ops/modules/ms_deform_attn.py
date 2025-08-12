@@ -29,7 +29,8 @@ import torch.nn.functional as F
 from torch.nn.init import xavier_uniform_, constant_
 
 from ..functions import ms_deform_attn_core_pytorch
-
+from ..functions import ms_deform_attn_core_pytorch_inference
+from collections.abc import Callable
 
 def _is_power_of_2(n):
     if (not isinstance(n, int)) or (n < 0):
@@ -73,11 +74,17 @@ class MSDeformAttn(nn.Module):
         self._reset_parameters()
         
         self._export = False
+        print(f'MSDeformAttn {self.named_modules()}')
 
     def export(self):
         """export mode
         """
         self._export = True
+        self._forward_origin = self.forward
+        self.forward = self.forward_export
+        for name, m in self.named_modules():
+            if hasattr(m, "export") and isinstance(m.export, Callable) and hasattr(m, "_export") and not m._export:
+                m.export()
 
     def _reset_parameters(self):
         constant_(self.sampling_offsets.weight.data, 0.)
@@ -112,11 +119,11 @@ class MSDeformAttn(nn.Module):
         N, Len_q, _ = query.shape
         N, Len_in, _ = input_flatten.shape
         assert (input_spatial_shapes[:, 0] * input_spatial_shapes[:, 1]).sum() == Len_in
-
+        
         value = self.value_proj(input_flatten)
         if input_padding_mask is not None:
             value = value.masked_fill(input_padding_mask[..., None], float(0))
-
+        
         sampling_offsets = self.sampling_offsets(query).view(N, Len_q, self.n_heads, self.n_levels, self.n_points, 2)
         attention_weights = self.attention_weights(query).view(N, Len_q, self.n_heads, self.n_levels * self.n_points)
 
@@ -138,3 +145,59 @@ class MSDeformAttn(nn.Module):
             value, input_spatial_shapes, sampling_locations, attention_weights)
         output = self.output_proj(output)
         return output
+    
+    def forward_export(self, query, reference_points, input_flatten, input_spatial_shapes,
+                input_level_start_index, input_padding_mask=None):
+        """
+        :param query                       (N, Length_{query}, C)
+        :param reference_points            (N, Length_{query}, n_levels, 2), range in [0, 1], top-left (0,0), bottom-right (1, 1), including padding area
+                                        or (N, Length_{query}, n_levels, 4), add additional (w, h) to form reference boxes
+        :param input_flatten               (N, \sum_{l=0}^{L-1} H_l \cdot W_l, C)
+        :param input_spatial_shapes        (n_levels, 2), [(H_0, W_0), (H_1, W_1), ..., (H_{L-1}, W_{L-1})]
+        :param input_level_start_index     (n_levels, ), [0, H_0*W_0, H_0*W_0+H_1*W_1, H_0*W_0+H_1*W_1+H_2*W_2, ..., H_0*W_0+H_1*W_1+...+H_{L-1}*W_{L-1}]
+        :param input_padding_mask          (N, \sum_{l=0}^{L-1} H_l \cdot W_l), True for padding elements, False for non-padding elements
+
+        :return output                     (N, Length_{query}, C)
+        """
+        print('running forward export')
+        #TODO run sqeeze on all inputs since they the batch dim should always be 1 for inerence
+        N, Len_q, _ = query.shape
+        N, Len_in, _ = input_flatten.shape
+        assert (input_spatial_shapes[:, 0] * input_spatial_shapes[:, 1]).sum() == Len_in
+        #since the batch size for inference is always 1, we can squeeze the batch dim
+        #so that we operator on a rank 5 tensor instead of a rank 6 tensor
+        query = query.squeeze(dim=0)
+        reference_points = reference_points.squeeze(dim=0)
+        input_flatten = input_flatten.squeeze(dim=0)
+        #input_spatial_shapes = input_spatial_shapes.squeeze(dim=0)
+
+        value = self.value_proj(input_flatten)
+        
+        if input_padding_mask is not None:
+            value = value.masked_fill(input_padding_mask[..., None], float(0))
+        
+        sampling_offsets = self.sampling_offsets(query).view(Len_q, self.n_heads, self.n_levels, self.n_points, 2)
+        attention_weights = self.attention_weights(query).view(Len_q, self.n_heads, self.n_levels * self.n_points)
+
+        # N, Len_q, n_heads, n_levels, n_points, 2
+        if reference_points.shape[-1] == 2:
+            offset_normalizer = torch.stack([input_spatial_shapes[..., 1], input_spatial_shapes[..., 0]], -1)
+            sampling_locations = reference_points[:, None, :, None, :] \
+                                 + sampling_offsets / offset_normalizer[ None, None, :, None, :]
+        elif reference_points.shape[-1] == 4:
+            sampling_locations = reference_points[:, None, :, None, :2] \
+                                 + sampling_offsets / self.n_points * reference_points[:, None, :, None, 2:] * 0.5
+        else:
+            raise ValueError(
+                'Last dim of reference_points must be 2 or 4, but get {} instead.'.format(reference_points.shape[-1]))
+        attention_weights = F.softmax(attention_weights, -1)
+
+        value = value.transpose(0, 1).contiguous().view(self.n_heads, self.d_model // self.n_heads, Len_in)
+        output = ms_deform_attn_core_pytorch_inference(
+            value, input_spatial_shapes, sampling_locations, attention_weights)
+        #unsqueeze the output adding back the batch dim
+        output = output.unsqueeze(0)
+        output = self.output_proj(output)
+        return output
+
+    
