@@ -140,3 +140,7 @@ class TrainConfig(BaseModel):
     run: Optional[str] = None
     class_names: List[str] = None
     run_test: bool = True
+
+def init(spatial_shapes: List[List[int]]):
+    global model_spatial_shapes
+    model_spatial_shapes = spatial_shapes

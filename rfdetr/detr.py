@@ -121,6 +121,13 @@ class RFDETR:
         """
         self.model.export(**kwargs)
 
+    def export_tflite(self, **kwargs):
+        """
+        Export your model to a TFLite file.
+
+        """
+        self.model.export_tflite(**kwargs)
+
     def train_from_config(self, config: TrainConfig, **kwargs):
         with open(
             os.path.join(config.dataset_dir, "train", "_annotations.coco.json"), "r"

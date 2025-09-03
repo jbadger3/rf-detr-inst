@@ -29,7 +29,7 @@ import torch.nn.functional as F
 from torch.nn.init import xavier_uniform_, constant_
 
 from ..functions import ms_deform_attn_core_pytorch
-
+from ..functions import ms_deform_attn_core_pytorch_tflite
 
 def _is_power_of_2(n):
     if (not isinstance(n, int)) or (n < 0):
@@ -111,30 +111,46 @@ class MSDeformAttn(nn.Module):
         """
         N, Len_q, _ = query.shape
         N, Len_in, _ = input_flatten.shape
-        assert (input_spatial_shapes[:, 0] * input_spatial_shapes[:, 1]).sum() == Len_in
+        #assert (input_spatial_shapes[:, 0] * input_spatial_shapes[:, 1]).sum() == Len_in
+        query = query.squeeze(dim=0)
+        reference_points = reference_points.squeeze(dim=0)
+        input_flatten = input_flatten.squeeze(dim=0)
 
         value = self.value_proj(input_flatten)
         if input_padding_mask is not None:
             value = value.masked_fill(input_padding_mask[..., None], float(0))
 
-        sampling_offsets = self.sampling_offsets(query).view(N, Len_q, self.n_heads, self.n_levels, self.n_points, 2)
-        attention_weights = self.attention_weights(query).view(N, Len_q, self.n_heads, self.n_levels * self.n_points)
+        sampling_offsets = self.sampling_offsets(query).view(Len_q, self.n_heads, self.n_levels, self.n_points, 2)
+        attention_weights = self.attention_weights(query).view(Len_q, self.n_heads, self.n_levels * self.n_points)
 
         # N, Len_q, n_heads, n_levels, n_points, 2
         if reference_points.shape[-1] == 2:
             offset_normalizer = torch.stack([input_spatial_shapes[..., 1], input_spatial_shapes[..., 0]], -1)
-            sampling_locations = reference_points[:, :, None, :, None, :] \
-                                 + sampling_offsets / offset_normalizer[None, None, None, :, None, :]
+            sampling_locations = reference_points[:, None, :, None, :] \
+                                 + sampling_offsets / offset_normalizer[None, None, :, None, :]
         elif reference_points.shape[-1] == 4:
-            sampling_locations = reference_points[:, :, None, :, None, :2] \
-                                 + sampling_offsets / self.n_points * reference_points[:, :, None, :, None, 2:] * 0.5
+            selected_reference_points = reference_points[ :, :, :2]
+            unsqueezed_reference_points = selected_reference_points.unsqueeze(1).unsqueeze(2)
+            sampling_reference_points = self.n_points * unsqueezed_reference_points * 0.5
+            # break into pieces divide, then put back together? or consider squeeze at zero then unsqueeze at end?
+            offsets_over_ref = sampling_offsets / sampling_reference_points
+            #print('offsets_over_ref:', offsets_over_ref.shape)
+            sampling_locations = reference_points[:, None, :, None, :2] \
+                                 + offsets_over_ref
+            #sampling_locations = reference_points[:, :, None, :, None, :2] \
+            #                     + sampling_offsets / self.n_points * reference_points[:, :, None, :, None, 2:] * 0.5
         else:
             raise ValueError(
                 'Last dim of reference_points must be 2 or 4, but get {} instead.'.format(reference_points.shape[-1]))
         attention_weights = F.softmax(attention_weights, -1)
 
-        value = value.transpose(1, 2).contiguous().view(N, self.n_heads, self.d_model // self.n_heads, Len_in)
-        output = ms_deform_attn_core_pytorch(
-            value, input_spatial_shapes, sampling_locations, attention_weights)
+        value = value.transpose(0, 1).contiguous().view(self.n_heads, self.d_model // self.n_heads, Len_in)
+        if self._export:
+            output = ms_deform_attn_core_pytorch_tflite(
+                value, input_spatial_shapes, sampling_locations, attention_weights)
+        else:
+            output = ms_deform_attn_core_pytorch_tflite(
+                value, input_spatial_shapes, sampling_locations, attention_weights)
+        output = output.unsqueeze(0)
         output = self.output_proj(output)
         return output

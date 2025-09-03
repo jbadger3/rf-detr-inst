@@ -563,6 +563,11 @@ class Model:
         
         print("ONNX export completed successfully")
         self.model = self.model.to(device)
+    
+    def export_tflite(self, output_dir="output", **kwargs):
+        """Export the trained model to TFLite format"""
+        print(f"Exporting model to TFLite format")
+        
             
 
 if __name__ == '__main__':

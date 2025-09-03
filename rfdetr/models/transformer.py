@@ -17,13 +17,14 @@ Transformer class
 """
 import math
 import copy
-from typing import Optional
+from typing import Optional, Callable
 
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
 
 from rfdetr.models.ops.modules import MSDeformAttn
+from rfdetr import config
 
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)"""
@@ -125,6 +126,73 @@ def gen_encoder_output_proposals(memory, memory_padding_mask, spatial_shapes, un
 
     return output_memory.to(memory.dtype), output_proposals.to(memory.dtype)
 
+def gen_encoder_output_proposals_export(memory, memory_padding_mask, spatial_shapes, unsigmoid=True):
+    """
+    Input:
+        - memory: bs, \sum{hw}, d_model
+        - memory_padding_mask: bs, \sum{hw}
+        - spatial_shapes: nlevel, 2
+    Output:
+        - output_memory: bs, \sum{hw}, d_model
+        - output_proposals: bs, \sum{hw}, 4
+    """
+    N_, S_, C_ = memory.shape
+    base_scale = 4.0
+    proposals = []
+    _cur = 0
+    #use global model_spatial_shapes to avoid tensor ambiguity from torch Dynamo
+    #and downstream errors with JAX
+    model_spatial_shapes = config.model_spatial_shapes
+    for lvl, (H_, W_) in enumerate(model_spatial_shapes):
+        #h_scalar = H_.item()
+        #torch._check_is_size(h_scalar)
+        #torch._check(h_scalar == 24)
+        #w_scalar = W_.item()
+        #torch._check_is_size(w_scalar)
+        #torch._check(w_scalar == 24)
+        if memory_padding_mask is not None:
+            mask_flatten_ = memory_padding_mask[:, _cur:(_cur + H_ * W_)].view(N_, H_, W_, 1)
+            valid_H = torch.sum(~mask_flatten_[:, :, 0, 0], 1)
+            valid_W = torch.sum(~mask_flatten_[:, 0, :, 0], 1)
+        else:
+            valid_H = torch.tensor([H_ for _ in range(N_)], device=memory.device)
+            valid_W = torch.tensor([W_ for _ in range(N_)], device=memory.device)
+        h_linespace = torch.arange(0, H_, step=1, device=memory.device)
+        w_linespace = torch.arange(0, W_, step=1, device=memory.device)
+        #grid_y, grid_x = torch.meshgrid(torch.linspace(0, H_ - 1, H_, dtype=torch.float32, device=memory.device),
+        #                                torch.linspace(0, W_ - 1, W_, dtype=torch.float32, device=memory.device))
+        grid_y, grid_x = torch.meshgrid(h_linespace, w_linespace, indexing='ij')
+        grid = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1)], -1) # H_, W_, 2
+
+        scale = torch.cat([valid_W.unsqueeze(-1), valid_H.unsqueeze(-1)], 1).view(N_, 1, 1, 2)
+        grid = (grid.unsqueeze(0).expand(N_, -1, -1, -1) + 0.5) / scale
+
+        wh = torch.ones_like(grid) * 0.05 * (2.0 ** lvl)
+
+        proposal = torch.cat((grid, wh), -1).view(N_, -1, 4)
+        proposals.append(proposal)
+        _cur += (H_ * W_)
+
+    output_proposals = torch.cat(proposals, 1)
+    output_proposals_valid = ((output_proposals > 0.01) & (output_proposals < 0.99)).all(-1, keepdim=True)
+
+    if unsigmoid:
+        output_proposals = torch.log(output_proposals / (1 - output_proposals)) # unsigmoid
+        if memory_padding_mask is not None:
+            output_proposals = output_proposals.masked_fill(memory_padding_mask.unsqueeze(-1), float('inf'))
+        output_proposals = output_proposals.masked_fill(~output_proposals_valid, float('inf'))
+    else:
+        if memory_padding_mask is not None:
+            output_proposals = output_proposals.masked_fill(memory_padding_mask.unsqueeze(-1), float(0))
+        output_proposals = output_proposals.masked_fill(~output_proposals_valid, float(0))
+
+    output_memory = memory
+    if memory_padding_mask is not None:
+        output_memory = output_memory.masked_fill(memory_padding_mask.unsqueeze(-1), float(0))
+    output_memory = output_memory.masked_fill(~output_proposals_valid, float(0))
+
+    return output_memory.to(memory.dtype), output_proposals.to(memory.dtype)
+
 
 class Transformer(nn.Module):
 
@@ -178,6 +246,11 @@ class Transformer(nn.Module):
     
     def export(self):
         self._export = True
+        self._forward_origin = self.forward
+        self.forward = self.forward_export
+        for name, m in self.named_modules():
+            if hasattr(m, "export") and isinstance(m.export, Callable) and hasattr(m, "_export") and not m._export:
+                m.export()
 
     def _reset_parameters(self):
         for p in self.parameters():
@@ -223,7 +296,7 @@ class Transformer(nn.Module):
         level_start_index = torch.cat((spatial_shapes.new_zeros((1, )), spatial_shapes.prod(1).cumsum(0)[:-1]))
         
         if self.two_stage:
-            output_memory, output_proposals = gen_encoder_output_proposals(
+            output_memory, output_proposals = gen_encoder_output_proposals_export(
                 memory, mask_flatten, spatial_shapes, unsigmoid=not self.bbox_reparam)
             # group detr for first stage
             refpoint_embed_ts, memory_ts, boxes_ts = [], [], []
@@ -246,6 +319,118 @@ class Transformer(nn.Module):
                 topk = min(self.num_queries, enc_outputs_class_unselected_gidx.shape[-2])
                 topk_proposals_gidx = torch.topk(enc_outputs_class_unselected_gidx.max(-1)[0], topk, dim=1)[1] # bs, nq
                 
+                refpoint_embed_gidx_undetach = torch.gather(
+                    enc_outputs_coord_unselected_gidx, 1, topk_proposals_gidx.unsqueeze(-1).repeat(1, 1, 4)) # unsigmoid
+                # for decoder layer, detached as initial ones, (bs, nq, 4)
+                refpoint_embed_gidx = refpoint_embed_gidx_undetach.detach()
+                
+                # get memory tgt
+                tgt_undetach_gidx = torch.gather(
+                    output_memory_gidx, 1, topk_proposals_gidx.unsqueeze(-1).repeat(1, 1, self.d_model))
+                
+                refpoint_embed_ts.append(refpoint_embed_gidx)
+                memory_ts.append(tgt_undetach_gidx)
+                boxes_ts.append(refpoint_embed_gidx_undetach)
+            # concat on dim=1, the nq dimension, (bs, nq, d) --> (bs, nq, d)
+            refpoint_embed_ts = torch.cat(refpoint_embed_ts, dim=1)
+            # (bs, nq, d)
+            memory_ts = torch.cat(memory_ts, dim=1)#.transpose(0, 1)
+            boxes_ts = torch.cat(boxes_ts, dim=1)#.transpose(0, 1)
+        
+        if self.dec_layers > 0:
+            tgt = query_feat.unsqueeze(0).repeat(bs, 1, 1)
+            refpoint_embed = refpoint_embed.unsqueeze(0).repeat(bs, 1, 1)
+            if self.two_stage:
+                ts_len = refpoint_embed_ts.shape[-2]
+                refpoint_embed_ts_subset = refpoint_embed[..., :ts_len, :]
+                refpoint_embed_subset = refpoint_embed[..., ts_len:, :]
+
+                if self.bbox_reparam:
+                    refpoint_embed_cxcy = refpoint_embed_ts_subset[..., :2] * refpoint_embed_ts[..., 2:]
+                    refpoint_embed_cxcy = refpoint_embed_cxcy + refpoint_embed_ts[..., :2]
+                    refpoint_embed_wh = refpoint_embed_ts_subset[..., 2:].exp() * refpoint_embed_ts[..., 2:]
+                    refpoint_embed_ts_subset = torch.concat(
+                        [refpoint_embed_cxcy, refpoint_embed_wh], dim=-1
+                    )
+                else:
+                    refpoint_embed_ts_subset = refpoint_embed_ts_subset + refpoint_embed_ts
+                
+                refpoint_embed = torch.concat(
+                    [refpoint_embed_ts_subset, refpoint_embed_subset], dim=-2)
+
+            hs, references = self.decoder(tgt, memory, memory_key_padding_mask=mask_flatten,
+                            pos=lvl_pos_embed_flatten, refpoints_unsigmoid=refpoint_embed,
+                            level_start_index=level_start_index, 
+                            spatial_shapes=spatial_shapes,
+                            valid_ratios=valid_ratios.to(memory.dtype) if valid_ratios is not None else valid_ratios)
+        else:
+            assert self.two_stage, "if not using decoder, two_stage must be True"
+            hs = None
+            references = None
+        
+        if self.two_stage:
+            if self.bbox_reparam:
+                return hs, references, memory_ts, boxes_ts
+            else:
+                return hs, references, memory_ts, boxes_ts.sigmoid()
+        return hs, references, None, None
+    
+    def forward_export(self, srcs, masks, pos_embeds, refpoint_embed, query_feat):
+        src_flatten = []
+        mask_flatten = [] if masks is not None else None
+        lvl_pos_embed_flatten = []
+        spatial_shapes = []
+        valid_ratios = [] if masks is not None else None
+        for lvl, (src, pos_embed) in enumerate(zip(srcs, pos_embeds)):
+            bs, c, h, w = src.shape
+            spatial_shape = (h, w)
+            spatial_shapes.append(spatial_shape)
+
+            src = src.flatten(2).transpose(1, 2)                # bs, hw, c
+            pos_embed = pos_embed.flatten(2).transpose(1, 2)    # bs, hw, c
+            lvl_pos_embed_flatten.append(pos_embed)
+            src_flatten.append(src)
+            if masks is not None:
+                mask = masks[lvl].flatten(1)                    # bs, hw
+                mask_flatten.append(mask)
+        memory = torch.cat(src_flatten, 1)    # bs, \sum{hxw}, c 
+        if masks is not None:
+            mask_flatten = torch.cat(mask_flatten, 1)   # bs, \sum{hxw}
+            valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)
+        lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1) # bs, \sum{hxw}, c 
+        spatial_shapes = torch.as_tensor(spatial_shapes, dtype=torch.long, device=memory.device)
+        level_start_index = torch.cat((spatial_shapes.new_zeros((1, )), spatial_shapes.prod(1).cumsum(0)[:-1]))
+        
+        if self.two_stage:
+            output_memory, output_proposals = gen_encoder_output_proposals_export(
+                memory, mask_flatten, spatial_shapes, unsigmoid=not self.bbox_reparam)
+            # group detr for first stage
+            refpoint_embed_ts, memory_ts, boxes_ts = [], [], []
+            group_detr = self.group_detr if self.training else 1
+            for g_idx in range(group_detr):
+                output_memory_gidx = self.enc_output_norm[g_idx](self.enc_output[g_idx](output_memory))
+    
+                enc_outputs_class_unselected_gidx = self.enc_out_class_embed[g_idx](output_memory_gidx)
+                if self.bbox_reparam:
+                    enc_outputs_coord_delta_gidx = self.enc_out_bbox_embed[g_idx](output_memory_gidx)
+                    enc_outputs_coord_cxcy_gidx = enc_outputs_coord_delta_gidx[...,
+                        :2] * output_proposals[..., 2:] + output_proposals[..., :2]
+                    enc_outputs_coord_wh_gidx = enc_outputs_coord_delta_gidx[..., 2:].exp() * output_proposals[..., 2:]
+                    enc_outputs_coord_unselected_gidx = torch.concat(
+                        [enc_outputs_coord_cxcy_gidx, enc_outputs_coord_wh_gidx], dim=-1)
+                else:
+                    enc_outputs_coord_unselected_gidx = self.enc_out_bbox_embed[g_idx](
+                        output_memory_gidx) + output_proposals # (bs, \sum{hw}, 4) unsigmoid
+
+                topk = min(self.num_queries, enc_outputs_class_unselected_gidx.shape[-2])
+                topk_proposals_gidx = torch.topk(enc_outputs_class_unselected_gidx.max(-1)[0], topk, dim=1)[1] # bs, nq
+                #alt to top k
+                #print("topk:", topk)
+                #enc_outputs_class_unselected_gidx_max = enc_outputs_class_unselected_gidx.max(-1)[0]
+                #print("enc_outputs_class_unselected_gidx_max:", enc_outputs_class_unselected_gidx_max.shape)
+
+                #topk_proposals_gidx = torch.argsort(enc_outputs_class_unselected_gidx.max(-1)[0], dim=1, descending=True)[:, :topk]
+               
                 refpoint_embed_gidx_undetach = torch.gather(
                     enc_outputs_coord_unselected_gidx, 1, topk_proposals_gidx.unsqueeze(-1).repeat(1, 1, 4)) # unsigmoid
                 # for decoder layer, detached as initial ones, (bs, nq, 4)
