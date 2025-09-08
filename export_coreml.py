@@ -112,7 +112,7 @@ def main():
     args = parse_arguments()
     
     # Create output directory and subdirectories if needed
-    os.makedirs(args.output, parents=True, exist_ok=True)
+    os.makedirs(args.output, exist_ok=True)
     
     # Get the appropriate model class and resolution
     ModelClass = get_model_class(args.model)
@@ -136,7 +136,7 @@ def main():
                     scale=scale, bias=bias,
                     )
                 ],
-        outputs=[ct.TensorType(dtype=np.float16), ct.TensorType(dtype=np.float16)],
+        outputs=[ct.TensorType(dtype=np.float32), ct.TensorType(dtype=np.float32)],
         minimum_deployment_target=ct.target.iOS16,
         compute_precision=ct.precision.FLOAT16  
     )
