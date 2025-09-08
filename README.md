@@ -10,46 +10,42 @@
 [![roboflow](https://raw.githubusercontent.com/roboflow-ai/notebooks/main/assets/badges/roboflow-blogpost.svg)](https://blog.roboflow.com/rf-detr)
 [![discord](https://img.shields.io/discord/1159501506232451173?logo=discord&label=discord&labelColor=fff&color=5865f2&link=https%3A%2F%2Fdiscord.gg%2FGbfgXGJ8Bk)](https://discord.gg/GbfgXGJ8Bk)
 
-RF-DETR is a real-time, transformer-based object detection model architecture developed by Roboflow and released under the Apache 2.0 license.
+RF-DETR is a real-time, transformer-based object detection model developed by Roboflow and released under the Apache 2.0 license.
 
-RF-DETR is the first real-time model to exceed 60 AP on the [Microsoft COCO benchmark](https://cocodataset.org/#home) alongside competitive performance at base sizes. It also achieves state-of-the-art performance on [RF100-VL](https://github.com/roboflow/rf100-vl), an object detection benchmark that measures model domain adaptability to real world problems. RF-DETR is fastest and most accurate for its size when compared current real-time objection models.
+RF-DETR-N outperforms YOLO11-N by 10 mAP points on the [Microsoft COCO](https://cocodataset.org/#home) benchmark while running faster at inference. On [RF100-VL](https://github.com/roboflow/rf100-vl), RF-DETR achieves state-of-the-art results, with RF-DETR-M beating YOLO11-M by an average of 5 mAP points across aerial datasets including drone, satellite, and radar.
 
-RF-DETR is small enough to run on the edge using [Inference](https://github.com/roboflow/inference), making it an ideal model for deployments that need both strong accuracy and real-time performance.
-
-[Read the documentation to get started training.](https://rfdetr.roboflow.com)
+[![rf-detr-tutorial-banner](https://github.com/user-attachments/assets/555a45c3-96e8-4d8a-ad29-f23403c8edfd)](https://youtu.be/-OvpdLAElFA)
 
 ## News
 
-- `2025/07/23`: We release three new checkpoints for RF-DETR: Nano, Small, and Medium.
-    - RF-DETR Base is now deprecated. We recommend using RF-DETR Medium which offers subtantially better accuracy at comparable latency.
-- `2025/03/20`: We release RF-DETR real-time object detection model. **Code and checkpoint for RF-DETR-large and RF-DETR-base are available.**
-- `2025/04/03`: We release early stopping, gradient checkpointing, metrics saving, training resume, TensorBoard and W&B logging support.
-- `2025/05/16`: We release an 'optimize_for_inference' method which speeds up native PyTorch by up to 2x, depending on platform.
+- `2025/09/02`: RF-DETR fine-tuning YouTube tutorial released. Learn step-by-step how to fine-tune RF-DETR on your custom dataset.
+- `2025/07/23`: Released three new checkpoints for RF-DETR: Nano, Small, and Medium.
+- `2025/05/16`: Added `optimize_for_inference` method, improving native PyTorch inference speed by up to 2x depending on platform.
+- `2025/04/03`: Introduced early stopping, gradient checkpointing, metric saving, training resume, TensorBoard, and W&B logging.
+- `2025/03/20`: Released RF-DETR real-time object detection model. Code and checkpoints for RF-DETR-Large and RF-DETR-Base are available.
 
 ## Results
 
 RF-DETR achieves state-of-the-art performance on both the Microsoft COCO and the RF100-VL benchmarks.
 
-The table below shows the performance of RF-DETR medium, compared to comparable medium models:
-
 ![rf-detr-coco-rf100-vl-9](https://media.roboflow.com/rfdetr/pareto1.png)
 
-|family|size  |coco_map50|coco_map50@95|rf100vl_map50|rv100vl_map50@95|latency|
-|------|------|----------|------------|-------------|---------------|-------|
-|RF-DETR|Nano  |67.6      |48.4        |84.1         |57.1           |2.32   |
-|RF-DETR|Small |72.1      |53.0        |85.9         |59.6           |3.52   |
-|RF-DETR|Medium|73.6      |54.7        |86.6         |60.6           |4.52   |
-|YOLO11|n     |52.0      |37.4        |81.4         |55.3           |2.49   |
-|YOLO11|s     |59.7      |44.4        |82.3         |56.2           |3.16   |
-|YOLO11|m     |64.1      |48.6        |82.5         |56.5           |5.13   |
-|YOLO11|l     |65.3      |50.2        |x            |x              |6.65   |
-|YOLO11|x     |66.5      |51.2        |x            |x              |11.92  |
-|LW-DETR|Tiny  |60.7      |42.9        |x            |x              |1.91   |
-|LW-DETR|Small |66.8      |48.0        |84.5         |58.0           |2.62   |
-|LW-DETR|Medium|72.0      |52.6        |85.2         |59.4           |4.49   |
-|D-FINE |Nano  |60.2      |42.7        |83.6         |57.7           |2.12   |
-|D-FINE |Small |67.6      |50.7        |84.5         |59.9           |3.55   |
-|D-FINE |Medium|72.6      |55.1        |84.6         |60.2           |5.68   |
+| Architecture | COCO AP<sub>50</sub> |  COCO AP<sub>50:95</sub>   |  RF100VL AP<sub>50</sub>   | RF100VL AP<sub>50:95</sub>  |  Latency (ms)   |   Params (M) |
+|:------------:|:--------------------:|:--------------------------:|:--------------------------:|:---------------------------:|:---------------:|:------------:|
+|  RF-DETR-N   |         67.6         |            48.4            |            84.1            |            57.1             |      2.32       |         30.5 |
+|  RF-DETR-S   |         72.1         |            53.0            |            85.9            |            59.6             |      3.52       |         32.1 |
+|  RF-DETR-M   |         73.6         |            54.7            |            86.6            |            60.6             |      4.52       |         33.7 |
+|   YOLO11-N   |         52.0         |            37.4            |            81.4            |            55.3             |      2.49       |          2.6 |
+|   YOLO11-S   |         59.7         |            44.4            |            82.3            |            56.2             |      3.16       |          9.4 |
+|   YOLO11-M   |         64.1         |            48.6            |            82.5            |            56.5             |      5.13       |         20.1 |
+|   YOLO11-L   |         65.3         |            50.2            |             x              |              x              |      6.65       |         25.3 |
+|   YOLO11-X   |         66.5         |            51.2            |             x              |              x              |      11.92      |         56.9 |
+|  LW-DETR-T   |         60.7         |            42.9            |             x              |              x              |      1.91       |         12.1 |
+|  LW-DETR-S   |         66.8         |            48.0            |            84.5            |            58.0             |      2.62       |         14.6 |
+|  LW-DETR-M   |         72.0         |            52.6            |            85.2            |            59.4             |      4.49       |         28.2 |
+|   D-FINE-N   |         60.2         |            42.7            |            83.6            |            57.7             |      2.12       |          3.8 |
+|   D-FINE-S   |         67.6         |            50.7            |            84.5            |            59.9             |      3.55       |         10.2 |
+|   D-FINE-M   |         72.6         |            55.1            |            84.6            |            60.2             |      5.68       |         19.2 |
 
 [See our benchmark notes in the RF-DETR documentation.](https://rfdetr.roboflow.com/learn/benchmarks/)
 
@@ -120,7 +116,7 @@ from rfdetr.util.coco_classes import COCO_CLASSES
 
 model = RFDETRBase()
 
-model = model.optimize_for_inference()
+model.optimize_for_inference()
 
 url = "https://media.roboflow.com/notebooks/examples/dog-2.jpeg"
 
