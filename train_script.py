@@ -47,13 +47,6 @@ def parse_arguments():
         help="RF-DETR model size to use for training"
     )
     
-    parser.add_argument(
-        "--num_classes",
-        type=int,
-        required=True,
-        help="Number of classes in the dataset"
-    )
-    
     # Training configuration
     parser.add_argument(
         "--epochs",
@@ -113,9 +106,6 @@ def validate_arguments(args):
     if args.lr <= 0:
         raise ValueError(f"Learning rate must be positive, got: {args.lr}")
     
-    if args.num_classes <= 0:
-        raise ValueError(f"Number of classes must be positive, got: {args.num_classes}")
-    
     # Create output directory if it doesn't exist
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     
@@ -126,7 +116,6 @@ def validate_arguments(args):
 def train_model(args):
     print(f"Setting up training with the following configuration:")
     print(f"  Model: RF-DETR {args.model.upper()}")
-    print(f"  Number of classes: {args.num_classes}")
     print(f"  Dataset directory: {args.dataset_dir}")
     print(f"  Epochs: {args.epochs}")
     print(f"  Batch size: {args.batch_size}")
@@ -136,7 +125,7 @@ def train_model(args):
 
     model_class = get_model_class(args.model)
 
-    model = model_class(num_classes=args.num_classes)
+    model = model_class()
     model.train(dataset_dir=args.dataset_dir, epochs=args.epochs, batch_size=args.batch_size,
                         grad_accum_steps=args.grad_accum_steps, lr=args.lr, output_dir=args.output_dir)
 
