@@ -76,6 +76,13 @@ def parse_arguments():
         help="Learning rate for training"
     )
     
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=2,
+        help="Number of data loader workers"
+    )
+    
     # Output configuration
     parser.add_argument(
         "--output_dir",
@@ -106,6 +113,9 @@ def validate_arguments(args):
     if args.lr <= 0:
         raise ValueError(f"Learning rate must be positive, got: {args.lr}")
     
+    if args.num_workers < 0:
+        raise ValueError(f"Number of workers must be non-negative, got: {args.num_workers}")
+    
     # Create output directory if it doesn't exist
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     
@@ -121,13 +131,15 @@ def train_model(args):
     print(f"  Batch size: {args.batch_size}")
     print(f"  Gradient accumulation steps: {args.grad_accum_steps}")
     print(f"  Learning rate: {args.lr}")
+    print(f"  Number of workers: {args.num_workers}")
     print(f"  Output directory: {args.output_dir}")
 
     model_class = get_model_class(args.model)
 
     model = model_class()
     model.train(dataset_dir=args.dataset_dir, epochs=args.epochs, batch_size=args.batch_size,
-                        grad_accum_steps=args.grad_accum_steps, lr=args.lr, output_dir=args.output_dir)
+                grad_accum_steps=args.grad_accum_steps, lr=args.lr, num_workers=args.num_workers,
+                output_dir=args.output_dir)
 
 
 def main():
