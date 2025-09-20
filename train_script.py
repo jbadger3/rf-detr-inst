@@ -90,6 +90,27 @@ def parse_arguments():
         help="Path to checkpoint file to resume training from"
     )
     
+    parser.add_argument(
+        "--pin_memory",
+        action="store_true",
+        default=True,
+        help="Use pinned memory for data loading (default: True)"
+    )
+    
+    parser.add_argument(
+        "--no_pin_memory",
+        action="store_false",
+        dest="pin_memory",
+        help="Disable pinned memory for data loading"
+    )
+    
+    parser.add_argument(
+        "--prefetch_factor",
+        type=int,
+        default=2,
+        help="Number of samples loaded in advance by each worker"
+    )
+    
     # Output configuration
     parser.add_argument(
         "--output_dir",
@@ -123,6 +144,9 @@ def validate_arguments(args):
     if args.num_workers < 0:
         raise ValueError(f"Number of workers must be non-negative, got: {args.num_workers}")
     
+    if args.prefetch_factor <= 0:
+        raise ValueError(f"Prefetch factor must be positive, got: {args.prefetch_factor}")
+    
     # Validate resume checkpoint path if provided
     if args.resume is not None and not os.path.exists(args.resume):
         raise ValueError(f"Resume checkpoint file does not exist: {args.resume}")
@@ -143,6 +167,8 @@ def train_model(args):
     print(f"  Gradient accumulation steps: {args.grad_accum_steps}")
     print(f"  Learning rate: {args.lr}")
     print(f"  Number of workers: {args.num_workers}")
+    print(f"  Pin memory: {args.pin_memory}")
+    print(f"  Prefetch factor: {args.prefetch_factor}")
     print(f"  Resume from: {args.resume if args.resume else 'None (training from scratch)'}")
     print(f"  Output directory: {args.output_dir}")
 
@@ -158,6 +184,8 @@ def train_model(args):
         'grad_accum_steps': args.grad_accum_steps,
         'lr': args.lr,
         'num_workers': args.num_workers,
+        'pin_memory': args.pin_memory,
+        'prefetch_factor': args.prefetch_factor,
         'output_dir': args.output_dir
     }
     
