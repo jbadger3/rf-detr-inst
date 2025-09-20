@@ -83,6 +83,13 @@ def parse_arguments():
         help="Number of data loader workers"
     )
     
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to checkpoint file to resume training from"
+    )
+    
     # Output configuration
     parser.add_argument(
         "--output_dir",
@@ -116,6 +123,10 @@ def validate_arguments(args):
     if args.num_workers < 0:
         raise ValueError(f"Number of workers must be non-negative, got: {args.num_workers}")
     
+    # Validate resume checkpoint path if provided
+    if args.resume is not None and not os.path.exists(args.resume):
+        raise ValueError(f"Resume checkpoint file does not exist: {args.resume}")
+    
     # Create output directory if it doesn't exist
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     
@@ -132,14 +143,29 @@ def train_model(args):
     print(f"  Gradient accumulation steps: {args.grad_accum_steps}")
     print(f"  Learning rate: {args.lr}")
     print(f"  Number of workers: {args.num_workers}")
+    print(f"  Resume from: {args.resume if args.resume else 'None (training from scratch)'}")
     print(f"  Output directory: {args.output_dir}")
 
     model_class = get_model_class(args.model)
 
     model = model_class()
-    model.train(dataset_dir=args.dataset_dir, epochs=args.epochs, batch_size=args.batch_size,
-                grad_accum_steps=args.grad_accum_steps, lr=args.lr, num_workers=args.num_workers,
-                output_dir=args.output_dir)
+    
+    # Prepare training arguments
+    train_kwargs = {
+        'dataset_dir': args.dataset_dir,
+        'epochs': args.epochs,
+        'batch_size': args.batch_size,
+        'grad_accum_steps': args.grad_accum_steps,
+        'lr': args.lr,
+        'num_workers': args.num_workers,
+        'output_dir': args.output_dir
+    }
+    
+    # Add resume argument if provided
+    if args.resume is not None:
+        train_kwargs['resume'] = args.resume
+    
+    model.train(**train_kwargs)
 
 
 def main():
